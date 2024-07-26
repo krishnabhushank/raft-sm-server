@@ -15,11 +15,27 @@ To create a Spring Boot application that sets up a Raft server cluster using JRa
    Add JRaft dependencies to your `pom.xml` or `build.gradle` file. For Maven:
 
    ```xml
-   <dependency>
-       <groupId>com.alipay.sofa</groupId>
-       <artifactId>jraft-core</artifactId>
-       <version>1.3.10</version>
-   </dependency>
+    <!-- Spring Boot dependencies -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+      
+    <!-- jraft dependencies -->
+    <dependency>
+        <groupId>com.alipay.sofa</groupId>
+        <artifactId>jraft-core</artifactId>
+        <version>1.3.8</version>
+    </dependency>
+    <dependency>
+        <groupId>com.alipay.sofa</groupId>
+        <artifactId>jraft-rheakv-core</artifactId>
+        <version>1.3.8</version>
+    </dependency>
    ```
 
    Make sure to check for the latest version of JRaft on [Maven Central](https://search.maven.org/search?q=g:com.alipay.sofa%20a:jraft-core).
@@ -68,6 +84,31 @@ To create a Spring Boot application that sets up a Raft server cluster using JRa
            RaftGroupService raftGroupService = new RaftGroupService(groupId, serverId, nodeOptions, dataPath);
            return raftGroupService.start();
        }
+    @Bean
+    public Node raftNode() {
+        // Define the Raft group and node configurations
+        String groupId = "raft-group";
+        String currentPeerIdStr = "localhost:8081"; // Update with the current pod's address
+        String initialConfStr = "localhost:8081,localhost:8082,localhost:8083"; // Update with the cluster addresses
+
+        PeerId currentPeerId = new PeerId();
+        currentPeerId.parse(currentPeerIdStr);
+        Configuration conf = new Configuration();
+        if (!conf.parse(initialConfStr)) {
+            throw new IllegalArgumentException("Invalid initial configuration: " + initialConfStr);
+        }
+
+        NodeOptions nodeOptions = new NodeOptions();
+        nodeOptions.setElectionTimeoutMs(1000);
+        nodeOptions.setLogUri("data/log");
+        nodeOptions.setRaftMetaUri("data/raft_meta");
+        nodeOptions.setSnapshotUri("data/snapshot");
+        nodeOptions.setInitialConf(conf);
+
+        // Start the Raft node
+        RaftGroupService raftGroupService = new RaftGroupService(groupId, currentPeerId, nodeOptions);
+        return raftGroupService.start();
+    }
    }
    ```
 
@@ -87,21 +128,121 @@ To create a Spring Boot application that sets up a Raft server cluster using JRa
    Create a simple controller to interact with the Raft cluster.
 
    ```java
-   import org.springframework.web.bind.annotation.GetMapping;
-   import org.springframework.web.bind.annotation.RestController;
-
+   import com.alipay.sofa.jraft.Node;
+   import com.alipay.sofa.jraft.entity.PeerId;
+   import org.springframework.beans.factory.annotation.Autowired;
+   import org.springframework.web.bind.annotation.*;
+   
    @RestController
    public class RaftController {
-
-       private final Node raftNode;
-
-       public RaftController(Node raftNode) {
-           this.raftNode = raftNode;
+   
+       @Autowired
+       private Node raftNode;
+   
+       @GetMapping("/isLeader")
+       public String isLeader() {
+           if (raftNode != null && raftNode.isLeader()) {
+               return "true";
+           } else {
+               return "false";
+           }
        }
-
-       @GetMapping("/status")
-       public String getStatus() {
-           return raftNode.isLeader() ? "I am the leader" : "I am a follower";
+   
+       @GetMapping("/health")
+       public String health() {
+           if (raftNode != null) {
+               return "Node is healthy";
+           } else {
+               return "Node is unhealthy";
+           }
+       }
+   
+       @GetMapping("/leader")
+       public String leader() {
+           if (raftNode != null) {
+               PeerId leader = raftNode.getLeaderId();
+               if (leader != null) {
+                   return leader.toString();
+               } else {
+                   return "No leader";
+               }
+           } else {
+               return "Node is not part of the cluster";
+           }
+       }
+   
+       @GetMapping("/configuration")
+       public String configuration() {
+           if (raftNode != null) {
+               return raftNode.getOptions().getInitialConf().toString();
+           } else {
+               return "Node is not part of the cluster";
+           }
+       }
+   
+       @GetMapping("/role")
+       public String role() {
+           if (raftNode != null) {
+               if (raftNode.isLeader()) {
+                   return "leader";
+               } else if (raftNode.isFollower()) {
+                   return "follower";
+               } else {
+                   return "candidate";
+               }
+           } else {
+               return "Node is not part of the cluster";
+           }
+       }
+   
+       @PostMapping("/addPeer")
+       public String addPeer(@RequestParam String peer) {
+           if (raftNode != null && peer != null) {
+               PeerId newPeer = new PeerId();
+               newPeer.parse(peer);
+               raftNode.addPeer(newPeer, status -> {
+                   if (status.isOk()) {
+                       return "Peer added successfully";
+                   } else {
+                       return "Failed to add peer: " + status.getErrorMsg();
+                   }
+               });
+               return "Adding peer...";
+           } else {
+               return "Invalid request";
+           }
+       }
+   
+       @PostMapping("/removePeer")
+       public String removePeer(@RequestParam String peer) {
+           if (raftNode != null && peer != null) {
+               PeerId removePeer = new PeerId();
+               removePeer.parse(peer);
+               raftNode.removePeer(removePeer, status -> {
+                   if (status.isOk()) {
+                       return "Peer removed successfully";
+                   } else {
+                       return "Failed to remove peer: " + status.getErrorMsg();
+                   }
+               });
+               return "Removing peer...";
+           } else {
+               return "Invalid request";
+           }
+       }
+   
+       @GetMapping("/metrics")
+       public String metrics() {
+           if (raftNode != null) {
+               StringBuilder metrics = new StringBuilder();
+               metrics.append("Term: ").append(raftNode.getCurrentTerm()).append("\n");
+               metrics.append("Last Log Index: ").append(raftNode.getLastLogIndex()).append("\n");
+               metrics.append("Committed Index: ").append(raftNode.getCommittedIndex()).append("\n");
+               metrics.append("Election Timeout: ").append(raftNode.getOptions().getElectionTimeoutMs()).append(" ms\n");
+               return metrics.toString();
+           } else {
+               return "Node is not part of the cluster";
+           }
        }
    }
    ```
