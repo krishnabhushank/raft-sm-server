@@ -339,3 +339,204 @@ Make sure to place these test classes in the `src/test/java` directory of your S
 **Next Steps:**
 - **a.** Enhance the tests by adding more specific assertions and mock behaviors.
 - **b.** Integrate these tests into your CI/CD pipeline for automated testing.
+
+Certainly! To add a REST controller to your Spring Boot application, we will:
+
+1. Create a REST controller.
+2. Define endpoints to access useful information from the Raft node.
+
+We'll add endpoints to:
+- Get the current leader.
+- Get the status of the Raft node.
+- Get the list of peers in the Raft group.
+
+### Step 1: Create the REST Controller
+
+Here’s the complete code for a REST controller that provides the required endpoints:
+
+```java
+import com.alipay.sofa.jraft.Node;
+import com.alipay.sofa.jraft.entity.PeerId;
+import com.alipay.sofa.jraft.entity.RaftOutter;
+import com.alipay.sofa.jraft.rpc.CliService;
+import com.alipay.sofa.jraft.rpc.impl.cli.CliServiceImpl;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
+import java.util.stream.Collectors;
+
+@RestController
+@RequestMapping("/raft")
+public class RaftController {
+
+    private final RaftNodeService raftNodeService;
+    private final CliService cliService;
+
+    @Autowired
+    public RaftController(RaftNodeService raftNodeService) {
+        this.raftNodeService = raftNodeService;
+        this.cliService = new CliServiceImpl();
+        this.cliService.init(null);
+    }
+
+    @GetMapping("/leader")
+    public String getLeader() {
+        Node node = raftNodeService.getNode();
+        if (node == null) {
+            return "Node is not initialized";
+        }
+        PeerId leader = node.getLeaderId();
+        return leader != null ? leader.toString() : "No leader";
+    }
+
+    @GetMapping("/status")
+    public String getNodeStatus() {
+        Node node = raftNodeService.getNode();
+        if (node == null) {
+            return "Node is not initialized";
+        }
+        RaftOutter.Status status = node.getStatus();
+        return status.toString();
+    }
+
+    @GetMapping("/peers")
+    public List<String> getPeers() {
+        Node node = raftNodeService.getNode();
+        if (node == null) {
+            return List.of("Node is not initialized");
+        }
+        List<PeerId> peers = node.listPeers();
+        return peers.stream().map(PeerId::toString).collect(Collectors.toList());
+    }
+}
+```
+
+### Step 2: Add the RaftNodeService and LeaderElectionListener
+
+Ensure the `RaftNodeService` and `LeaderElectionListener` classes are included as before:
+
+```java
+import com.alipay.sofa.jraft.JRaftUtils;
+import com.alipay.sofa.jraft.Node;
+import com.alipay.sofa.jraft.RaftGroupService;
+import com.alipay.sofa.jraft.conf.Configuration;
+import com.alipay.sofa.jraft.entity.PeerId;
+import com.alipay.sofa.jraft.option.NodeOptions;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+@Service
+public class RaftNodeService {
+
+    private final NodeOptions nodeOptions;
+    private Node node;
+
+    @Autowired
+    public RaftNodeService(NodeOptions nodeOptions) {
+        this.nodeOptions = nodeOptions;
+    }
+
+    public void start() {
+        String groupId = "example_raft_group";
+        PeerId serverId = JRaftUtils.getPeerId("localhost:8081");
+        Configuration initConf = JRaftUtils.getConfiguration("localhost:8081,localhost:8082,localhost:8083");
+
+        RaftGroupService raftGroupService = new RaftGroupService(groupId, serverId, nodeOptions, initConf);
+        this.node = raftGroupService.start();
+    }
+
+    public Node getNode() {
+        return this.node;
+    }
+}
+```
+
+```java
+import com.alipay.sofa.jraft.Node;
+import com.alipay.sofa.jraft.core.StateMachineAdapter;
+import com.alipay.sofa.jraft.entity.LeaderChangeContext;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+import javax.annotation.PostConstruct;
+
+@Service
+public class LeaderElectionListener extends StateMachineAdapter {
+
+    private final RaftNodeService raftNodeService;
+
+    @Autowired
+    public LeaderElectionListener(RaftNodeService raftNodeService) {
+        this.raftNodeService = raftNodeService;
+    }
+
+    @PostConstruct
+    public void init() {
+        Node node = raftNodeService.getNode();
+        if (node != null) {
+            node.addStateMachine(this);
+        }
+    }
+
+    @Override
+    public void onLeaderStart(long term) {
+        System.out.println("Node is now the leader. Term: " + term);
+    }
+
+    @Override
+    public void onLeaderStop(LeaderChangeContext ctx) {
+        System.out.println("Node is no longer the leader. Context: " + ctx);
+    }
+
+    @Override
+    public void onStartFollowing(LeaderChangeContext ctx) {
+        System.out.println("Node started following the leader. Context: " + ctx);
+    }
+
+    @Override
+    public void onStopFollowing(LeaderChangeContext ctx) {
+        System.out.println("Node stopped following the leader. Context: " + ctx);
+    }
+}
+```
+
+### Step 3: Ensure RaftNodeService Starts
+
+Update your main application class to ensure the Raft node starts on application startup:
+
+```java
+import org.springframework.boot.CommandLineRunner;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.annotation.Bean;
+
+@SpringBootApplication
+public class RaftApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(RaftApplication.class, args);
+    }
+
+    @Bean
+    public CommandLineRunner commandLineRunner(RaftNodeService raftNodeService) {
+        return args -> {
+            raftNodeService.start();
+        };
+    }
+}
+```
+
+### Summary
+
+This setup adds a REST controller with endpoints to:
+- Get the current leader.
+- Get the status of the Raft node.
+- Get the list of peers in the Raft group.
+
+**Next Steps:**
+- **a.** Extend the REST controller with additional endpoints to interact with the Raft node.
+- **b.** Add integration tests for the REST endpoints to ensure they work as expected.
